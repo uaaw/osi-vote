@@ -168,4 +168,93 @@ contract AnimeVotingTest is Test {
         assertEq(name, "Goku");
         assertEq(votes, 4); /* 1 + 3 */
     }
+
+    /* ---- removeFromWhitelist ---- */
+
+    function test_RemoveFromWhitelistClearsWeight() public {
+        voting.removeFromWhitelist(user1);
+        assertFalse(voting.whitelist(user1));
+        assertEq(voting.voteWeight(user1), 0);
+    }
+
+    function test_RemoveFromWhitelistSubtractsDelegatedWeight() public {
+        vm.warp(START);
+        vm.prank(user3);
+        voting.delegate(user1); /* user3(weight=1) → user1 */
+
+        assertEq(voting.delegatedWeight(user1), 1);
+
+        voting.removeFromWhitelist(user3);
+
+        assertEq(voting.delegatedWeight(user1), 0);
+    }
+
+    function test_RevertIf_RemovedUserReveals() public {
+        bytes32 salt = keccak256("s");
+
+        vm.warp(START);
+        vm.prank(user1);
+        voting.commitVote(_makeHash(user1, 0, salt));
+
+        voting.removeFromWhitelist(user1);
+
+        vm.warp(COMMIT_END + 1);
+        vm.prank(user1);
+        vm.expectRevert("Not whitelisted");
+        voting.revealVote(0, salt);
+    }
+
+    /* ---- delegation chain prevention ---- */
+
+    function test_RevertIf_DelegationChain() public {
+        vm.warp(START);
+        vm.prank(user3);
+        voting.delegate(user1); /* user3 → user1 */
+
+        /* user1はすでに委任を受けているのでuser2への委任は不可 */
+        vm.prank(user1);
+        vm.expectRevert("Delegate has already delegated");
+        voting.delegate(user2);
+    }
+
+    /* ---- addToWhitelist after delegation ---- */
+
+    function test_RevertIf_WeightChangedAfterDelegation() public {
+        vm.warp(START);
+        vm.prank(user3);
+        voting.delegate(user1);
+
+        vm.expectRevert("Cannot change weight after delegation");
+        voting.addToWhitelist(user3, 5);
+    }
+
+    /* ---- 期間外操作 ---- */
+
+    function test_RevertIf_CommitBeforeStart() public {
+        vm.prank(user1);
+        vm.expectRevert("Outside commit period");
+        voting.commitVote(bytes32(0));
+    }
+
+    function test_RevertIf_CommitAfterEnd() public {
+        vm.warp(COMMIT_END + 1);
+        vm.prank(user1);
+        vm.expectRevert("Outside commit period");
+        voting.commitVote(bytes32(0));
+    }
+
+    function test_RevertIf_DoubleReveal() public {
+        bytes32 salt = keccak256("s");
+
+        vm.warp(START);
+        vm.prank(user1);
+        voting.commitVote(_makeHash(user1, 0, salt));
+
+        vm.warp(COMMIT_END + 1);
+        vm.startPrank(user1);
+        voting.revealVote(0, salt);
+        vm.expectRevert("Already revealed");
+        voting.revealVote(0, salt);
+        vm.stopPrank();
+    }
 }

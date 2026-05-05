@@ -61,13 +61,20 @@ contract AnimeVoting {
 
     function addToWhitelist(address _addr, uint32 _weight) external onlyOwner {
         require(_weight > 0, "Weight must be > 0");
+        /* 委任後のweight変更はdelegatedWeightと不整合になるため禁止 */
+        require(!hasDelegated[_addr], "Cannot change weight after delegation");
         whitelist[_addr] = true;
         voteWeight[_addr] = _weight;
         emit Whitelisted(_addr, _weight);
     }
 
     function removeFromWhitelist(address _addr) external onlyOwner {
+        /* 委任済みの場合は委任先のdelegatedWeightから減算 */
+        if (hasDelegated[_addr]) {
+            delegatedWeight[delegateTo[_addr]] -= voteWeight[_addr];
+        }
         whitelist[_addr] = false;
+        voteWeight[_addr] = 0;
     }
 
     /* コミット前に自分のvoteWeightを別アドレスへ移譲する */
@@ -77,6 +84,8 @@ contract AnimeVoting {
         require(whitelist[_to], "Delegate not whitelisted");
         require(!hasDelegated[msg.sender], "Already delegated");
         require(!hasCommitted[msg.sender], "Already committed");
+        /* A→B→C のチェーン委任を禁止。Aのweightが消失するバグを防ぐ */
+        require(!hasDelegated[_to], "Delegate has already delegated");
 
         hasDelegated[msg.sender] = true;
         delegateTo[msg.sender] = _to;
@@ -99,7 +108,7 @@ contract AnimeVoting {
     }
 
     /* リビール: コミット時と同じcharacterIdとsaltを提出して票を確定 */
-    function revealVote(uint256 _characterId, bytes32 _salt) external {
+    function revealVote(uint256 _characterId, bytes32 _salt) external onlyWhitelisted {
         require(block.timestamp > commitEnd && block.timestamp <= revealEnd, "Outside reveal period");
         require(hasCommitted[msg.sender], "No commit found");
         require(!hasRevealed[msg.sender], "Already revealed");
@@ -133,6 +142,7 @@ contract AnimeVoting {
         return block.timestamp > commitEnd && block.timestamp <= revealEnd;
     }
 
+    /* 同票の場合はIDが小さいキャラクターが勝者となる */
     function getWinner() external view returns (uint256 winnerId, string memory winnerName, uint32 winnerVotes) {
         require(characters.length > 0, "No characters");
 
