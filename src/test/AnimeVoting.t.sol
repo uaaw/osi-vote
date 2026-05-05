@@ -6,67 +6,166 @@ import {AnimeVoting} from "../src/AnimeVoting.sol";
 
 contract AnimeVotingTest is Test {
     AnimeVoting public voting;
+
+    uint64 constant START  = 1000;
+    uint64 constant COMMIT_END = 2000;
+    uint64 constant REVEAL_END = 3000;
+
     address owner = address(this);
     address user1 = address(0x1);
     address user2 = address(0x2);
+    address user3 = address(0x3);
 
     function setUp() public {
-        voting = new AnimeVoting();
+        vm.warp(START - 1);
+        voting = new AnimeVoting(START, COMMIT_END, REVEAL_END);
         voting.addCharacter("Naruto");
         voting.addCharacter("Goku");
+
+        voting.addToWhitelist(user1, 1);
+        voting.addToWhitelist(user2, 3); /* user2はVIPで3票分 */
+        voting.addToWhitelist(user3, 1);
     }
 
-    function test_AddCharacter() public {
-        voting.addCharacter("Luffy");
-        assertEq(voting.getCharacterCount(), 3);
+    /* ---- whitelist ---- */
+
+    function test_RevertIf_NonWhitelistedCommits() public {
+        vm.warp(START);
+        vm.prank(address(0x99));
+        vm.expectRevert("Not whitelisted");
+        voting.commitVote(bytes32(0));
     }
 
-    function test_Vote() public {
+    /* ---- commit-reveal ---- */
+
+    function _makeHash(address voter, uint256 characterId, bytes32 salt) internal pure returns (bytes32) {
+        return keccak256(abi.encodePacked(characterId, salt, voter));
+    }
+
+    function test_CommitAndReveal() public {
+        bytes32 salt = keccak256("secret");
+        bytes32 hash = _makeHash(user1, 0, salt);
+
+        vm.warp(START);
         vm.prank(user1);
-        voting.vote(0);
+        voting.commitVote(hash);
 
-        (, uint256 voteCount) = voting.characters(0);
+        vm.warp(COMMIT_END + 1);
+        vm.prank(user1);
+        voting.revealVote(0, salt);
+
+        (, uint32 voteCount) = voting.characters(0);
         assertEq(voteCount, 1);
-        assertTrue(voting.hasVoted(user1));
-        assertEq(voting.votedFor(user1), 0);
     }
 
-    function test_RevertIf_DoubleVote() public {
+    function test_RevertIf_WrongHash() public {
+        bytes32 salt = keccak256("secret");
+        bytes32 hash = _makeHash(user1, 0, salt);
+
+        vm.warp(START);
+        vm.prank(user1);
+        voting.commitVote(hash);
+
+        vm.warp(COMMIT_END + 1);
+        vm.prank(user1);
+        vm.expectRevert("Hash mismatch");
+        voting.revealVote(1, salt); /* 違うキャラクターIDでリビール */
+    }
+
+    function test_RevertIf_DoubleCommit() public {
+        bytes32 hash = _makeHash(user1, 0, keccak256("s"));
+
+        vm.warp(START);
         vm.startPrank(user1);
-        voting.vote(0);
-        vm.expectRevert("Already voted");
-        voting.vote(1);
+        voting.commitVote(hash);
+        vm.expectRevert("Already committed");
+        voting.commitVote(hash);
         vm.stopPrank();
     }
 
-    function test_RevertIf_InvalidCharacter() public {
+    function test_RevertIf_RevealOutsidePeriod() public {
+        bytes32 salt = keccak256("secret");
+        vm.warp(START);
         vm.prank(user1);
-        vm.expectRevert("Invalid character");
-        voting.vote(99);
+        voting.commitVote(_makeHash(user1, 0, salt));
+
+        /* コミット期間中にリビールしようとする */
+        vm.prank(user1);
+        vm.expectRevert("Outside reveal period");
+        voting.revealVote(0, salt);
     }
 
-    function test_RevertIf_VotingClosed() public {
-        voting.setVotingOpen(false);
-        vm.prank(user1);
-        vm.expectRevert("Voting is closed");
-        voting.vote(0);
+    /* ---- weighted voting ---- */
+
+    function test_WeightedVoting() public {
+        bytes32 salt = keccak256("s");
+
+        vm.warp(START);
+        vm.prank(user2);
+        voting.commitVote(_makeHash(user2, 0, salt));
+
+        vm.warp(COMMIT_END + 1);
+        vm.prank(user2);
+        voting.revealVote(0, salt);
+
+        (, uint32 voteCount) = voting.characters(0);
+        assertEq(voteCount, 3); /* user2のweightは3 */
     }
+
+    /* ---- delegation ---- */
+
+    function test_Delegation() public {
+        bytes32 salt = keccak256("s");
+
+        vm.warp(START);
+
+        /* user3がuser1に委任 */
+        vm.prank(user3);
+        voting.delegate(user1);
+
+        /* user1がコミット */
+        vm.prank(user1);
+        voting.commitVote(_makeHash(user1, 0, salt));
+
+        vm.warp(COMMIT_END + 1);
+        vm.prank(user1);
+        voting.revealVote(0, salt);
+
+        /* user1(1) + user3から委任(1) = 2票 */
+        (, uint32 voteCount) = voting.characters(0);
+        assertEq(voteCount, 2);
+    }
+
+    function test_RevertIf_DelegatedUserCommits() public {
+        vm.warp(START);
+        vm.startPrank(user3);
+        voting.delegate(user1);
+        vm.expectRevert("Vote is delegated");
+        voting.commitVote(bytes32(0));
+        vm.stopPrank();
+    }
+
+    /* ---- getWinner ---- */
 
     function test_GetWinner() public {
-        vm.prank(user1);
-        voting.vote(1);
-        vm.prank(user2);
-        voting.vote(1);
+        bytes32 salt1 = keccak256("s1");
+        bytes32 salt2 = keccak256("s2");
 
-        (uint256 id, string memory name, uint256 votes) = voting.getWinner();
+        vm.warp(START);
+        vm.prank(user1);
+        voting.commitVote(_makeHash(user1, 1, salt1));
+        vm.prank(user2);
+        voting.commitVote(_makeHash(user2, 1, salt2)); /* user2 weight=3 */
+
+        vm.warp(COMMIT_END + 1);
+        vm.prank(user1);
+        voting.revealVote(1, salt1);
+        vm.prank(user2);
+        voting.revealVote(1, salt2);
+
+        (uint256 id, string memory name, uint32 votes) = voting.getWinner();
         assertEq(id, 1);
         assertEq(name, "Goku");
-        assertEq(votes, 2);
-    }
-
-    function test_RevertIf_NonOwnerAddsCharacter() public {
-        vm.prank(user1);
-        vm.expectRevert("Not owner");
-        voting.addCharacter("Levi");
+        assertEq(votes, 4); /* 1 + 3 */
     }
 }

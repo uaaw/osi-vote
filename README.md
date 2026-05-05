@@ -10,11 +10,23 @@
 
 ## 機能
 
-- **キャラクター登録** `addCharacter(name)` - オーナーのみ投票候補を追加できる
-- **投票** `vote(characterId)` - 一アドレス一票。投票後の変更は不可
-- **投票開閉** `setVotingOpen(bool)` - オーナーが投票期間をコントロールできる
-- **一覧取得** `getCharacters()` - 全キャラクターと得票数を返す
+- **ホワイトリスト** `addToWhitelist(addr, weight)` - オーナーが登録したアドレスのみ投票できる
+- **重み付き投票** - アドレスごとに票の重さ（weight）を設定できる。VIP投票者などに活用
+- **委任** `delegate(to)` - 自分のvoteWeightをコミット前に別アドレスへ移譲できる
+- **期間制限** - コミット期間・リビール期間を`block.timestamp`で管理。期間外の操作はrevert
+- **コミット・リビール** - コミット期間にハッシュを提出し、リビール期間に開示して票を確定する。バンドワゴン効果を防止
 - **勝者取得** `getWinner()` - 最多得票キャラクターのID・名前・票数を返す
+
+## コミット・リビールの仕組み
+
+```
+hash = keccak256(abi.encodePacked(characterId, salt, msg.sender))
+```
+
+1. コミット期間中に `commitVote(hash)` を提出
+2. リビール期間中に `revealVote(characterId, salt)` で開示・票を確定
+
+`msg.sender` をハッシュに含めることでフロントランニングを防止している。
 
 ## セットアップ
 
@@ -31,6 +43,6 @@ forge test
 # ローカルチェーンを起動
 anvil
 
-# デプロイ（初期キャラクター5体が自動登録される）
+# デプロイ（コミット期間1日・リビール期間1日で自動設定）
 forge script script/Deploy.s.sol --rpc-url http://localhost:8545 --broadcast
 ```

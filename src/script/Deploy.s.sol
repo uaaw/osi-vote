@@ -6,11 +6,15 @@ import {AnimeVoting} from "../src/AnimeVoting.sol";
 
 contract DeployAnimeVoting is Script {
     function run() external returns (AnimeVoting) {
+        /* コミット期間: デプロイから1日後まで、リビール期間: さらに1日 */
+        uint64 commitStart = uint64(block.timestamp);
+        uint64 commitEnd   = commitStart + 1 days;
+        uint64 revealEnd   = commitEnd   + 1 days;
+
         vm.startBroadcast();
 
-        AnimeVoting voting = new AnimeVoting();
+        AnimeVoting voting = new AnimeVoting(commitStart, commitEnd, revealEnd);
 
-        /* 初期キャラクター登録 */
         voting.addCharacter("Naruto");
         voting.addCharacter("Goku");
         voting.addCharacter("Levi");
